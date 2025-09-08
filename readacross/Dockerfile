@@ -18,9 +18,15 @@ RUN mkdir -p /opt/java && \
 COPY environment.yml /tmp/environment.yml
 RUN micromamba install -y -n base -f /tmp/environment.yml && micromamba clean --all --yes
 
-# App
+# Create tool dirs
 WORKDIR /app
 COPY . /app
+
+# Download the real jars at build time
+# Replace the URLs below with your actual GitHub Release asset URLs
+RUN mkdir -p tools/biotransformer tools/toxtree && \
+    curl -fL -o tools/biotransformer/BioTransformer.jar "https://github.com/mrstephenb0/readacross/releases/download/assets/BioTransformer3.0_20230525.jar" && \
+    curl -fL -o tools/toxtree/Toxtree.jar "https://github.com/mrstephenb0/readacross/releases/download/assets/Toxtree-3.1.0.1851.jar"
 
 # Streamlit
 ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
