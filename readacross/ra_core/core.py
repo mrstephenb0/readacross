@@ -47,12 +47,22 @@ TOOLS_DIR = APP_ROOT / "tools"
 BT_DIR    = TOOLS_DIR / "biotransformer" / "wishartlab-biotransformer3.0jar-6432cf887ed7"
 TX_DIR    = TOOLS_DIR / "toxtree" / "Toxtree-v3.1.0.1851" / "Toxtree"
 
-JAVA_BIN = os.environ.get("JAVA_BIN") or shutil.which("java")
-JAVA_BIN_TOXTREE = os.environ.get("JAVA_BIN_TOXTREE") or JAVA_BIN
+# JVMs
+JAVA_BIN_DEFAULT = shutil.which("java") or "/usr/bin/java"
+JAVA_BIN_TOXTREE = os.environ.get("JAVA_BIN_TOXTREE", "/opt/java/temurin-11/bin/java")
+JAVA_BIN_BT      = os.environ.get("JAVA_BIN_BIOTRANSFORMER", JAVA_BIN_DEFAULT)
 
-# --- Java: default + Toxtree-specific
-JAVA_BIN = os.environ.get("JAVA_BIN") or shutil.which("java")
-JAVA_BIN_TOXTREE = os.environ.get("JAVA_BIN_TOXTREE") or JAVA_BIN
+# Heap (MB) with sensible defaults for Render free/low-memory tiers
+TT_HEAP_MB = int(os.environ.get("TT_HEAP_MB", "512"))
+BT_HEAP_MB = int(os.environ.get("BT_HEAP_MB", "1024"))
+
+def _check_file(p: Path, label: str) -> None:
+    print(f"[JAR RESOLVE] Using {label}: {p}")
+    if not p.exists():
+        raise FileNotFoundError(f"{label} not found at {p}")
+
+_check_file(BT_JAR, "BioTransformer")
+_check_file(TX_JAR, "Toxtree")
 
 def _find_jar(dirpath: Path, patterns) -> Path:
     """
@@ -1239,18 +1249,11 @@ def calculate_mutagenicity_score(target_smiles: str, surrogate_smiles: str) -> f
     if not target_alerts or not surrogate_alerts: return 0.0
     return len(target_set.intersection(surrogate_set)) / denominator
 
-def _get_ames_alerts(smiles: str) -> list[str]:
-    """
-    Runs the Ames test for a single SMILES and returns a list of the specific
-    human-readable alert descriptions found.
-    """
-    df = _run_toxtree_for_smiles(
-        smiles,
-        module_class="toxtree.plugins.ames.AmesMutagenicityRules"
-    )
+def get_ames_alerts(smiles: str) -> list[str]:
+    df = _run_toxtree_module(smiles, "toxtree.plugins.ames.AmesMutagenicityRules")
     if df is None:
         return ["Error: Toxtree execution failed"]
-
+        
     # Your existing mapping:
     ames_alert_lookup = {
         'SA1_Ames': 'Acyl halides',
@@ -1301,18 +1304,15 @@ def _get_ames_alerts(smiles: str) -> list[str]:
         'SA69_Ames': 'Fluorinated quinolines'
     }
 
-    try:
+        try:
         mut_col = 'Structural Alert for S. typhimurium  mutagenicity'
-        if str(df.iloc[0].get(mut_col, "")).strip().upper() == 'YES':
-            cols = [c for c in ames_alert_lookup if c in df.columns]
+        if str(df.iloc[0].get(mut_col)).strip().upper() == "YES":
             triggered = [
-                ames_alert_lookup[c]
-                for c in cols
-                if str(df.iloc[0].get(c, "")).strip().upper() == 'YES'
+                name for col, name in ames_alert_lookup.items()
+                if col in df.columns and str(df.iloc[0].get(col)).strip().upper() == "YES"
             ]
-            return triggered if triggered else ['Alert identified (unspecified)']
-        else:
-            return []
+            return triggered if triggered else ["Alert identified (unspecified)"]
+        return []
     except Exception:
         return ["Error parsing results"]
 
@@ -1367,15 +1367,12 @@ def calculate_cramer_path_score(target_smiles: str, surrogate_smiles: str) -> fl
     return score
 
 def _get_cramer_decision_path(smiles: str) -> tuple[str, str]:
-    df = _run_toxtree_for_smiles(
-        smiles,
-        module_class="toxtree.tree.cramer3.RevisedCramerDecisionTree"
-    )
+    df = _run_toxtree_module(smiles, "toxtree.tree.cramer3.RevisedCramerDecisionTree")
     if df is None:
         return "Error", "Error"
-    path = df.iloc[0].get('toxtree.tree.cramer3.CDTResult', 'Path not found')
-    classification = df.iloc[0].get('RevisedCDT', 'Class not found')
-    return path, classification
+    path = df.iloc[0].get("toxtree.tree.cramer3.CDTResult", "Path not found")
+    klass = df.iloc[0].get("RevisedCDT", "Class not found")
+    return str(path), str(klass)
 
 
 def _calculate_path_divergence_score(path1: str, path2: str) -> tuple:
@@ -1406,63 +1403,53 @@ JAVA_BIN_TOXTREE = (
     or JAVA_BIN_DEFAULT
 )
 
-def _run_toxtree_for_smiles(smiles: str, module_class: str, *, xmx: str = "1G", timeout: int = 180):
+def _run_toxtree_module(smiles: str, module_klass: str) -> pd.DataFrame | None:
     """
-    Runs Toxtree for a single SMILES and returns a pandas DataFrame parsed from
-    its CSV output, or None on failure.
-
-    Writes input/output in a temp dir and passes ABSOLUTE paths to the jar.
-    Uses JAVA_BIN_TOXTREE (Java 11) and headless AWT.
+    Run a Toxtree module in headless mode on a single SMILES.
+    Writes input/output inside a temp folder and sets CWD to that folder.
+    Returns the output.csv as DataFrame or None on failure.
     """
-    if not JAVA_BIN_TOXTREE:
-        print("-> Toxtree Java not found (JAVA_BIN_TOXTREE and system 'java' missing).")
-        return None
-    if not TX_JAR.exists():
-        print(f"-> Toxtree JAR not found at {TX_JAR}")
-        return None
+    # Temp workspace
+    with tempfile.TemporaryDirectory() as tmpd:
+        tmp = Path(tmpd)
+        in_csv  = tmp / "input.csv"
+        out_csv = tmp / "output.csv"
 
-    with tempfile.TemporaryDirectory() as td_str:
-        td = Path(td_str)
-        in_csv  = td / "input.csv"
-        out_csv = td / "output.csv"
-
-        # Write input where WE control the path:
+        # CSV input must have SMILES header
         pd.DataFrame([{"SMILES": smiles}]).to_csv(in_csv, index=False)
 
         cmd = [
-            str(JAVA_BIN_TOXTREE),
-            f"-Xmx{xmx}",
+            JAVA_BIN_TOXTREE,
+            f"-Xmx{TT_HEAP_MB}m",
             "-Djava.awt.headless=true",
             "-jar", str(TX_JAR),
-            "-n",
-            "-i", str(in_csv),     # ABSOLUTE path
-            "-o", str(out_csv),    # ABSOLUTE path
-            "-m", module_class,
+            "-n",                      # no GUI
+            "-i", "input.csv",         # **relative** to CWD
+            "-o", "output.csv",        # **relative** to CWD
+            "-m", module_klass,        # module class
         ]
-        try:
-            print(f"[TOXTREE] CMD: {' '.join(cmd)}")
-            # cwd can be TX_DIR in case Toxtree looks up internal resources relative to jar directory.
-            res = subprocess.run(
-                cmd, cwd=str(TX_DIR), text=True,
-                capture_output=True, timeout=timeout, check=True
-            )
-        except subprocess.CalledProcessError as e:
-            print(f"-> Toxtree failed for {smiles} [{module_class}]")
-            print(f"   CWD: {TX_DIR}")
-            print(f"   STDERR:\n{e.stderr}")
-            return None
-        except Exception as e:
-            print(f"-> Toxtree unexpected error: {e}")
+        print(f"[TOXTREE] CMD: {' '.join(cmd)}")
+        res = subprocess.run(cmd, cwd=tmp, capture_output=True, text=True)
+
+        # Show diagnostics always if file missing
+        if res.returncode != 0:
+            print("[TOXTREE] returncode:", res.returncode)
+            print("[TOXTREE] stdout:\n", res.stdout)
+            print("[TOXTREE] stderr:\n", res.stderr)
             return None
 
         if not out_csv.exists():
-            print("-> Toxtree did not produce output.csv at expected path:", out_csv)
+            print(f"-> Toxtree did not produce output.csv at expected path: {out_csv}")
+            print("[TOXTREE] stdout:\n", res.stdout)
+            print("[TOXTREE] stderr:\n", res.stderr)
             return None
 
         try:
             return pd.read_csv(out_csv)
         except Exception as e:
-            print("-> Toxtree output parse error:", e)
+            print("[TOXTREE] Failed to read output.csv:", e)
+            print("[TOXTREE] stdout:\n", res.stdout)
+            print("[TOXTREE] stderr:\n", res.stderr)
             return None
 # In[6]:
 
@@ -1765,75 +1752,63 @@ def standardize_smiles(smiles: str) -> str:
     except:
         return None
 
-def run_biotransformer_and_get_reactions(smiles: str) -> set:
+def run_biotransformer_and_get_reactions(smiles: str) -> set[str]:
     """
-    Runs BioTransformer and returns a set of reaction names.
-    Writes input/output in a temp dir and passes ABSOLUTE paths to the jar.
+    Run BioTransformer in a temp workspace, giving it a decent heap.
     """
-    standardized_smi = standardize_smiles(smiles)
-    if not standardized_smi:
-        return set()
-    if not BT_JAR.exists():
-        print(f"-> BioTransformer JAR not found at {BT_JAR}")
-        return set()
+    reactions: set[str] = set()
+    std = smiles  # if you have a standardize_smiles() keep using it
 
-    reactions = set()
-    with tempfile.TemporaryDirectory() as td_str:
-        td = Path(td_str)
-        tmp_in_sdf  = td / "input.sdf"
-        tmp_out_csv = td / "output.csv"
+    m = Chem.MolFromSmiles(std)
+    if m is None:
+        return reactions
 
-        # Build SDF input
-        m = Chem.MolFromSmiles(standardized_smi)
-        if not m:
-            return set()
-        w = Chem.SDWriter(str(tmp_in_sdf))
+    with tempfile.TemporaryDirectory() as tmpd:
+        tmp = Path(tmpd)
+        in_sdf  = tmp / "input.sdf"
+        out_csv = tmp / "output.csv"
+
+        # Write single-mol SDF input
+        w = Chem.SDWriter(str(in_sdf))
         w.write(m)
         w.close()
 
         cmd = [
-            str(JAVA_BIN or "java"),  # BioTransformer runs fine on Java 17; JAVA_BIN defaults to system 'java'
+            JAVA_BIN_BT,
+            f"-Xmx{BT_HEAP_MB}m",
             "-jar", str(BT_JAR),
             "-k", "pred",
             "-b", "allHuman",
-            "-isdf", str(tmp_in_sdf),     # ABSOLUTE path
-            "-ocsv", str(tmp_out_csv),    # ABSOLUTE path
+            "-isdf", "input.sdf",     # relative in CWD
+            "-ocsv", "output.csv",    # relative in CWD
             "-s", "2",
-            "-cm", "3"
+            "-cm", "3",
         ]
-        try:
-            print(f"[BT] CMD: {' '.join(cmd)}")
-            # Keep cwd at BT_DIR (jar may look for local resources), but file paths are absolute.
-            res = subprocess.run(
-                cmd, cwd=str(BT_DIR), text=True,
-                capture_output=True, timeout=300, check=True
-            )
-        except subprocess.CalledProcessError as e:
-            print(f"-> BioTransformer failed for {smiles}")
-            if e.stderr:
-                print("STDERR:\n" + e.stderr)
-            else:
-                print("STDERR: <empty>")
-            return set()
-        except Exception as e:
-            print(f"-> BioTransformer unexpected error: {e}")
-            return set()
+        print(f"[BT] CMD: {' '.join(cmd)}")
+        res = subprocess.run(cmd, cwd=tmp, capture_output=True, text=True)
 
-        if not tmp_out_csv.exists():
-            print("-> BioTransformer did not produce output CSV at:", tmp_out_csv)
-            return set()
+        if res.returncode != 0:
+            print("[BT] returncode:", res.returncode)
+            print("[BT] stdout:\n", res.stdout)
+            print("[BT] stderr:\n", res.stderr)
+            return reactions
 
-        # Parse reactions
+        if not out_csv.exists():
+            print(f"-> BioTransformer did not produce output CSV at: {out_csv}")
+            print("[BT] stdout:\n", res.stdout)
+            print("[BT] stderr:\n", res.stderr)
+            return reactions
+
         try:
-            import csv
-            with open(tmp_out_csv, newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
+            with out_csv.open("r", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
                     rxn = row.get("Reaction")
                     if rxn:
                         reactions.add(rxn)
         except Exception as e:
-            print("-> BioTransformer output parse error:", e)
+            print("[BT] Failed to read output.csv:", e)
+            print("[BT] stdout:\n", res.stdout)
+            print("[BT] stderr:\n", res.stderr)
 
     return reactions
 
