@@ -1304,7 +1304,7 @@ def get_ames_alerts(smiles: str) -> list[str]:
         'SA69_Ames': 'Fluorinated quinolines'
     }
 
-        try:
+    try:
         mut_col = 'Structural Alert for S. typhimurium  mutagenicity'
         if str(df.iloc[0].get(mut_col)).strip().upper() == "YES":
             triggered = [
