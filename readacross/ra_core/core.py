@@ -61,8 +61,7 @@ def _check_file(p: Path, label: str) -> None:
     if not p.exists():
         raise FileNotFoundError(f"{label} not found at {p}")
 
-_check_file(BT_JAR, "BioTransformer")
-_check_file(TX_JAR, "Toxtree")
+
 
 def _find_jar(dirpath: Path, patterns) -> Path:
     """
@@ -100,7 +99,8 @@ BT_JAR = _find_jar(BT_DIR, ["BioTransformer*.jar", "*.jar"])
 # If you know the exact JAR name, you can hardcode it here instead.
 TX_JAR = _find_jar(TX_DIR, ["Toxtree*.jar", "*.jar"])
 
-
+_check_file(BT_JAR, "BioTransformer")
+_check_file(TX_JAR, "Toxtree")
 
 
 dart_alerts_dictionary = {
