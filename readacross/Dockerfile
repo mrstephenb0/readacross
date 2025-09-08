@@ -16,9 +16,6 @@ COPY . /app
 # Streamlit config (headless)
 ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
-# Some hosts (e.g., Render/Cloud Run) provide PORT env var:
-ENV PORT=8501
 
-EXPOSE 8501
 # Use micromamba's python to run Streamlit
-CMD ["/usr/local/bin/_entrypoint.sh", "streamlit", "run", "app.py", "--server.port=${PORT}"]
+CMD ["/usr/local/bin/_entrypoint.sh", "bash", "-lc", "streamlit run app.py --server.address=0.0.0.0 --server.port=$PORT"]
