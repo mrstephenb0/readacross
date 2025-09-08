@@ -44,7 +44,7 @@ APP_ROOT = Path(__file__).resolve().parents[1]   # .../readacross
 
 # --- Tools folders you created
 TOOLS_DIR = APP_ROOT / "tools"
-BT_DIR    = TOOLS_DIR / "biotransformer"
+BT_DIR    = TOOLS_DIR / "biotransformer" / "wishartlab-biotransformer3.0jar-6432cf887ed7"
 TX_DIR    = TOOLS_DIR / "toxtree" / "Toxtree-v3.1.0.1851" / "Toxtree"
 
 # --- Locate Java (env override first, then system PATH)
@@ -64,11 +64,11 @@ def _find_jar(dirpath: Path, pattern: str) -> Path:
     return matches[0]
 
 # BioTransformer (e.g., BioTransformer3.0_20230525.jar)
-BT_JAR = _find_jar(BT_DIR, "BioTransformer*.jar")
+BT_JAR = _find_jar(BT_DIR, "BioTransformer3.0_20230525.jar")
 
 # Toxtree main jar (common names: toxtree.jar, toxtree*.jar)
 # If you know the exact JAR name, you can hardcode it here instead.
-TX_JAR = _find_jar(TX_DIR, "toxtree*.jar")
+TX_JAR = _find_jar(TX_DIR, "Toxtree-3.1.0.1851.jar.jar")
 
 
 
