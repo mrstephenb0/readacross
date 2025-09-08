@@ -50,18 +50,22 @@ TX_DIR    = TOOLS_DIR / "toxtree" / "Toxtree-v3.1.0.1851" / "Toxtree"
 # --- Locate Java (env override first, then system PATH)
 JAVA_BIN = os.environ.get("JAVA_BIN") or shutil.which("java")
 
+# Separate Java just for Toxtree (prefer env, else fall back to default)
+JAVA_BIN_TOXTREE = os.environ.get("JAVA_BIN_TOXTREE") or JAVA_BIN
+
 def _require_java():
     if not JAVA_BIN:
         raise RuntimeError(
             "Java not found. Set JAVA_BIN to your java executable, or ensure 'java' is on PATH."
         )
 
-# --- Locate JARs (adjust patterns if your filenames differ)
-def _find_jar(dirpath: Path, pattern: str) -> Path:
-    matches = sorted(dirpath.glob(pattern))
-    if not matches:
-        raise FileNotFoundError(f"No JAR matching '{pattern}' in: {dirpath}")
-    return matches[0]
+# --- Locate JARs (flexible patterns; adjust if your filenames differ)
+def _find_jar(dirpath: Path, patterns: list[str]) -> Path:
+    for pat in patterns:
+        matches = sorted(dirpath.glob(pat))
+        if matches:
+            return matches[0]
+    raise FileNotFoundError(f"No JAR matching {patterns} in: {dirpath}")
 
 # BioTransformer (e.g., BioTransformer3.0_20230525.jar)
 BT_JAR = _find_jar(BT_DIR, "BioTransformer3.0_20230525.jar")
