@@ -83,11 +83,12 @@ def _find_jar(dirpath: Path, patterns) -> Path:
     raise FileNotFoundError(f"No JAR matching {patterns} in {dirpath}")
     
 # BioTransformer (e.g., BioTransformer3.0_20230525.jar)
-BT_JAR = _find_jar(BT_DIR, "BioTransformer3.0_20230525.jar")
+BT_JAR = _find_jar(BT_DIR, ["BioTransformer*.jar", "*.jar"])
+
 
 # Toxtree main jar (common names: toxtree.jar, toxtree*.jar)
 # If you know the exact JAR name, you can hardcode it here instead.
-TX_JAR = _find_jar(TX_DIR, "Toxtree-3.1.0.1851.jar")
+TX_JAR = _find_jar(TX_DIR, ["Toxtree*.jar", "*.jar"])
 
 
 
