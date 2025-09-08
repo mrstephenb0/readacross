@@ -1380,25 +1380,42 @@ def _calculate_path_divergence_score(path1: str, path2: str) -> tuple:
     return 0.9, "Path lengths differ"
 
 # --- Generic Toxtree Helper ---
+from pathlib import Path
+import os, subprocess, tempfile, pandas as pd
+
+# Detect Java for tools
+JAVA_BIN_DEFAULT = os.environ.get("JAVA_BIN") or shutil.which("java")
+
+# Allow a *separate* Java for Toxtree (falls back to default if not set)
+JAVA_BIN_TOXTREE = (
+    os.environ.get("JAVA_BIN_TOXTREE")
+    or ("/usr/lib/jvm/java-11-openjdk-amd64/bin/java" if Path("/usr/lib/jvm/java-11-openjdk-amd64/bin/java").exists() else None)
+    or JAVA_BIN_DEFAULT
+)
+
 def _run_toxtree_for_smiles(smiles: str, module_class: str, *, xmx: str = "1G", timeout: int = 120) -> pd.DataFrame | None:
     """
     Runs Toxtree with a single SMILES for the given module class and returns the result DataFrame.
     Uses a per-call temp directory and executes with cwd=TX_DIR.
     """
+    if not JAVA_BIN_TOXTREE:
+        print("-> Toxtree Java not found (JAVA_BIN_TOXTREE and system 'java' missing).")
+        return None
+
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         in_csv  = td / "input.csv"
         out_csv = td / "output.csv"
 
-        # write input CSV (header must match Toxtree CLI expectations)
         pd.DataFrame([{"SMILES": smiles}]).to_csv(in_csv, index=False)
 
         cmd = [
-            JAVA_BIN or "java",
+            JAVA_BIN_TOXTREE,
             f"-Xmx{xmx}",
+            "-Djava.awt.headless=true",        # important on servers
             "-jar", str(TX_JAR),
             "-n",
-            "-i", str(in_csv.name),   # pass basename; cwd=TX_DIR
+            "-i", str(in_csv.name),            # basenames; cwd is TX_DIR
             "-o", str(out_csv.name),
             "-m", module_class,
         ]
@@ -1409,28 +1426,30 @@ def _run_toxtree_for_smiles(smiles: str, module_class: str, *, xmx: str = "1G", 
                 capture_output=True, timeout=timeout, check=True
             )
         except subprocess.CalledProcessError as e:
-            print(f"-> Toxtree failed for {smiles} [{module_class}]\nSTDERR:\n{(e.stderr or '').strip()}")
+            print(f"-> Toxtree failed for {smiles} [{module_class}]")
+            print(f"   CWD: {TX_DIR}")
+            print(f"   CMD: {' '.join(cmd)}")
+            if e.stderr:
+                print("   STDERR:\n" + e.stderr)
             return None
         except Exception as e:
-            print(f"-> Toxtree unexpected error for {smiles}: {e}")
+            print(f"-> Toxtree unexpected error: {e}")
             return None
 
-        # Toxtree writes into cwd (TX_DIR) because we passed basenames; read from there
         out_path = TX_DIR / out_csv.name
         if not out_path.exists():
+            print("-> Toxtree did not produce output.csv in tool directory.")
             return None
 
         try:
             df = pd.read_csv(out_path)
         finally:
-            # clean up output in cwd so we don't accumulate files
             try:
                 out_path.unlink()
             except Exception:
                 pass
 
         return df
-
 
 # In[6]:
 
