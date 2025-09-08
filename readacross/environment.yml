@@ -1,9 +1,11 @@
 name: readacross
 channels:
+  - 3d-e-chem
   - conda-forge
 dependencies:
   - python=3.11
   - rdkit
+  - sygma
   - pandas
   - numpy
   - openpyxl
