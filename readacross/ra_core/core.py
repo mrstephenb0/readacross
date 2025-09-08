@@ -47,25 +47,39 @@ TOOLS_DIR = APP_ROOT / "tools"
 BT_DIR    = TOOLS_DIR / "biotransformer" / "wishartlab-biotransformer3.0jar-6432cf887ed7"
 TX_DIR    = TOOLS_DIR / "toxtree" / "Toxtree-v3.1.0.1851" / "Toxtree"
 
-# --- Locate Java (env override first, then system PATH)
 JAVA_BIN = os.environ.get("JAVA_BIN") or shutil.which("java")
-
-# Separate Java just for Toxtree (prefer env, else fall back to default)
 JAVA_BIN_TOXTREE = os.environ.get("JAVA_BIN_TOXTREE") or JAVA_BIN
 
-def _require_java():
-    if not JAVA_BIN:
-        raise RuntimeError(
-            "Java not found. Set JAVA_BIN to your java executable, or ensure 'java' is on PATH."
-        )
-
-# --- Locate JARs (flexible patterns; adjust if your filenames differ)
-def _find_jar(dirpath: Path, patterns: list[str]) -> Path:
+def _find_jar(dirpath: Path, patterns) -> Path:
+    """
+    patterns: str or list[str]
+    Returns the first match, or raises FileNotFoundError with a directory listing.
+    """
+    dirpath = Path(dirpath)
+    # normalize patterns → list[str]
+    if isinstance(patterns, (str, Path)):
+        patterns = [str(patterns)]
+    found = []
     for pat in patterns:
+        if not pat:
+            continue
         matches = sorted(dirpath.glob(pat))
         if matches:
-            return matches[0]
-    raise FileNotFoundError(f"No JAR matching {patterns} in: {dirpath}")
+            found.extend(matches)
+            break
+    if not found:
+        print(f"[JAR RESOLVE] looked in: {dirpath}")
+        print(f"[JAR RESOLVE] patterns: {patterns}")
+        try:
+            print("[JAR RESOLVE] directory contents:")
+            for p in sorted(dirpath.glob("*")):
+                print("  -", p.name)
+        except Exception as e:
+            print("[JAR RESOLVE] listing failed:", e)
+        raise FileNotFoundError(f"No JAR matching {patterns} in {dirpath}")
+    jar_path = found[0]
+    print(f"[JAR RESOLVE] using: {jar_path}")
+    return jar_path
 
 # BioTransformer (e.g., BioTransformer3.0_20230525.jar)
 BT_JAR = _find_jar(BT_DIR, "BioTransformer3.0_20230525.jar")
@@ -1416,14 +1430,8 @@ def _run_toxtree_for_smiles(smiles: str, module_class: str, *, xmx: str = "1G", 
         pd.DataFrame([{"SMILES": smiles}]).to_csv(in_csv, index=False)
 
         cmd = [
-            JAVA_BIN_TOXTREE,
-            f"-Xmx{xmx}",
-            "-Djava.awt.headless=true",
-            "-jar", str(TX_JAR),
-            "-n",
-            "-i", in_csv.name,   # basenames; cwd is TX_DIR
-            "-o", out_csv.name,
-            "-m", module_class,
+            JAVA_BIN_TOXTREE, "-Xmx1G", "-Djava.awt.headless=true", "-jar", str(TX_JAR),
+            "-n", "-i", in_csv.name, "-o", out_csv.name, "-m", module_class
         ]
 
         try:
