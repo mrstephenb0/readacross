@@ -1225,12 +1225,14 @@ def calculate_mutagenicity_score(target_smiles: str, surrogate_smiles: str) -> f
 
 def _get_ames_alerts(smiles: str) -> list[str]:
     """
-    Runs the Ames module and returns a list of human-readable alert descriptions (or empty list if none).
+    Runs the Ames test for a single SMILES and returns a list of the specific
+    human-readable alert descriptions found.
     """
     df = _run_toxtree_for_smiles(
-        smiles, module_class="toxtree.plugins.ames.AmesMutagenicityRules"
+        smiles,
+        module_class="toxtree.plugins.ames.AmesMutagenicityRules"
     )
-    if df is None or df.empty:
+    if df is None:
         return ["Error: Toxtree execution failed"]
 
     # Your existing mapping:
@@ -1284,19 +1286,17 @@ def _get_ames_alerts(smiles: str) -> list[str]:
     }
 
     try:
-        mutagenicity_col = 'Structural Alert for S. typhimurium  mutagenicity'  # note double space in your original
-        yes = str(df.iloc[0].get(mutagenicity_col, "")).strip().upper() == "YES"
-        if not yes:
-            return []  # explicit "no alert"
-
-        # collect only columns present in this output
-        present_flags = [k for k in ames_alert_lookup.keys() if k in df.columns]
-        triggered = [
-            ames_alert_lookup[k]
-            for k in present_flags
-            if str(df.iloc[0].get(k)).strip().upper() == "YES"
-        ]
-        return triggered if triggered else ["Alert identified (unspecified)"]
+        mut_col = 'Structural Alert for S. typhimurium  mutagenicity'
+        if str(df.iloc[0].get(mut_col, "")).strip().upper() == 'YES':
+            cols = [c for c in ames_alert_lookup if c in df.columns]
+            triggered = [
+                ames_alert_lookup[c]
+                for c in cols
+                if str(df.iloc[0].get(c, "")).strip().upper() == 'YES'
+            ]
+            return triggered if triggered else ['Alert identified (unspecified)']
+        else:
+            return []
     except Exception:
         return ["Error parsing results"]
 
@@ -1351,23 +1351,16 @@ def calculate_cramer_path_score(target_smiles: str, surrogate_smiles: str) -> fl
     return score
 
 def _get_cramer_decision_path(smiles: str) -> tuple[str, str]:
-    """
-    Returns (decision_path, classification) using Revised Cramer Decision Tree.
-    On error, returns ("Error", "Error").
-    """
     df = _run_toxtree_for_smiles(
-        smiles, module_class="toxtree.tree.cramer3.RevisedCramerDecisionTree"
+        smiles,
+        module_class="toxtree.tree.cramer3.RevisedCramerDecisionTree"
     )
-    if df is None or df.empty:
+    if df is None:
         return "Error", "Error"
-
-    # Column names from your current parsing:
-    path_col = "toxtree.tree.cramer3.CDTResult"
-    class_col = "RevisedCDT"
-
-    path = str(df.iloc[0].get(path_col, "Path not found"))
-    classification = str(df.iloc[0].get(class_col, "Class not found"))
+    path = df.iloc[0].get('toxtree.tree.cramer3.CDTResult', 'Path not found')
+    classification = df.iloc[0].get('RevisedCDT', 'Class not found')
     return path, classification
+
 
 def _calculate_path_divergence_score(path1: str, path2: str) -> tuple:
     if path1 == "Error" or path2 == "Error" or path1 == path2: return 1.0, "Identical Path"
@@ -1397,13 +1390,21 @@ JAVA_BIN_TOXTREE = (
     or JAVA_BIN_DEFAULT
 )
 
-def _run_toxtree_for_smiles(smiles: str, module_class: str, *, xmx: str = "1G", timeout: int = 120) -> pd.DataFrame | None:
+def _run_toxtree_for_smiles(smiles: str, module_class: str, *, xmx: str = "1G", timeout: int = 180):
     """
-    Runs Toxtree with a single SMILES for the given module class and returns the result DataFrame.
-    Uses a per-call temp directory and executes with cwd=TX_DIR.
+    Runs Toxtree for a single SMILES and returns a pandas DataFrame
+    parsed from Toxtree's CSV, or None on failure.
+
+    Uses JAVA_BIN_TOXTREE (Java 11 in the container) and headless mode.
+    Writes temporary input/output files in a temp dir; executes with cwd=TX_DIR.
     """
     if not JAVA_BIN_TOXTREE:
         print("-> Toxtree Java not found (JAVA_BIN_TOXTREE and system 'java' missing).")
+        return None
+
+    # ensure tool dir exists
+    if not TX_JAR.exists():
+        print(f"-> Toxtree JAR not found at {TX_JAR}")
         return None
 
     with tempfile.TemporaryDirectory() as td:
@@ -1411,16 +1412,17 @@ def _run_toxtree_for_smiles(smiles: str, module_class: str, *, xmx: str = "1G", 
         in_csv  = td / "input.csv"
         out_csv = td / "output.csv"
 
+        # Write input
         pd.DataFrame([{"SMILES": smiles}]).to_csv(in_csv, index=False)
 
         cmd = [
             JAVA_BIN_TOXTREE,
             f"-Xmx{xmx}",
-            "-Djava.awt.headless=true",        # important on servers
+            "-Djava.awt.headless=true",
             "-jar", str(TX_JAR),
             "-n",
-            "-i", str(in_csv.name),            # basenames; cwd is TX_DIR
-            "-o", str(out_csv.name),
+            "-i", in_csv.name,   # basenames; cwd is TX_DIR
+            "-o", out_csv.name,
             "-m", module_class,
         ]
 
@@ -1440,6 +1442,7 @@ def _run_toxtree_for_smiles(smiles: str, module_class: str, *, xmx: str = "1G", 
             print(f"-> Toxtree unexpected error: {e}")
             return None
 
+        # Read output from the TX_DIR (Toxtree writes in cwd)
         out_path = TX_DIR / out_csv.name
         if not out_path.exists():
             print("-> Toxtree did not produce output.csv in tool directory.")
