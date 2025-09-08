@@ -1408,35 +1408,40 @@ JAVA_BIN_TOXTREE = (
 
 def _run_toxtree_for_smiles(smiles: str, module_class: str, *, xmx: str = "1G", timeout: int = 180):
     """
-    Runs Toxtree for a single SMILES and returns a pandas DataFrame
-    parsed from Toxtree's CSV, or None on failure.
+    Runs Toxtree for a single SMILES and returns a pandas DataFrame parsed from
+    its CSV output, or None on failure.
 
-    Uses JAVA_BIN_TOXTREE (Java 11 in the container) and headless mode.
-    Writes temporary input/output files in a temp dir; executes with cwd=TX_DIR.
+    Writes input/output in a temp dir and passes ABSOLUTE paths to the jar.
+    Uses JAVA_BIN_TOXTREE (Java 11) and headless AWT.
     """
     if not JAVA_BIN_TOXTREE:
         print("-> Toxtree Java not found (JAVA_BIN_TOXTREE and system 'java' missing).")
         return None
-
-    # ensure tool dir exists
     if not TX_JAR.exists():
         print(f"-> Toxtree JAR not found at {TX_JAR}")
         return None
 
-    with tempfile.TemporaryDirectory() as td:
-        td = Path(td)
+    with tempfile.TemporaryDirectory() as td_str:
+        td = Path(td_str)
         in_csv  = td / "input.csv"
         out_csv = td / "output.csv"
 
-        # Write input
+        # Write input where WE control the path:
         pd.DataFrame([{"SMILES": smiles}]).to_csv(in_csv, index=False)
 
         cmd = [
-            JAVA_BIN_TOXTREE, "-Xmx1G", "-Djava.awt.headless=true", "-jar", str(TX_JAR),
-            "-n", "-i", in_csv.name, "-o", out_csv.name, "-m", module_class
+            str(JAVA_BIN_TOXTREE),
+            f"-Xmx{xmx}",
+            "-Djava.awt.headless=true",
+            "-jar", str(TX_JAR),
+            "-n",
+            "-i", str(in_csv),     # ABSOLUTE path
+            "-o", str(out_csv),    # ABSOLUTE path
+            "-m", module_class,
         ]
-
         try:
+            print(f"[TOXTREE] CMD: {' '.join(cmd)}")
+            # cwd can be TX_DIR in case Toxtree looks up internal resources relative to jar directory.
             res = subprocess.run(
                 cmd, cwd=str(TX_DIR), text=True,
                 capture_output=True, timeout=timeout, check=True
@@ -1444,30 +1449,21 @@ def _run_toxtree_for_smiles(smiles: str, module_class: str, *, xmx: str = "1G", 
         except subprocess.CalledProcessError as e:
             print(f"-> Toxtree failed for {smiles} [{module_class}]")
             print(f"   CWD: {TX_DIR}")
-            print(f"   CMD: {' '.join(cmd)}")
-            if e.stderr:
-                print("   STDERR:\n" + e.stderr)
+            print(f"   STDERR:\n{e.stderr}")
             return None
         except Exception as e:
             print(f"-> Toxtree unexpected error: {e}")
             return None
 
-        # Read output from the TX_DIR (Toxtree writes in cwd)
-        out_path = TX_DIR / out_csv.name
-        if not out_path.exists():
-            print("-> Toxtree did not produce output.csv in tool directory.")
+        if not out_csv.exists():
+            print("-> Toxtree did not produce output.csv at expected path:", out_csv)
             return None
 
         try:
-            df = pd.read_csv(out_path)
-        finally:
-            try:
-                out_path.unlink()
-            except Exception:
-                pass
-
-        return df
-
+            return pd.read_csv(out_csv)
+        except Exception as e:
+            print("-> Toxtree output parse error:", e)
+            return None
 # In[6]:
 
 
@@ -1769,75 +1765,75 @@ def standardize_smiles(smiles: str) -> str:
     except:
         return None
 
-def run_biotransformer_and_get_reactions(smiles: str) -> set[str]:
+def run_biotransformer_and_get_reactions(smiles: str) -> set:
     """
-    Runs BioTransformer and returns a set of reaction names (from the 'Reaction' column).
-    Uses a per-call temp directory and executes with cwd=BT_DIR.
+    Runs BioTransformer and returns a set of reaction names.
+    Writes input/output in a temp dir and passes ABSOLUTE paths to the jar.
     """
-    # optional: standardization if you have it
-    try:
-        std_smi = standardize_smiles(smiles)  # your helper
-    except Exception:
-        std_smi = smiles
-    if not std_smi:
+    standardized_smi = standardize_smiles(smiles)
+    if not standardized_smi:
+        return set()
+    if not BT_JAR.exists():
+        print(f"-> BioTransformer JAR not found at {BT_JAR}")
         return set()
 
-    mol = Chem.MolFromSmiles(std_smi)
-    if mol is None:
-        return set()
+    reactions = set()
+    with tempfile.TemporaryDirectory() as td_str:
+        td = Path(td_str)
+        tmp_in_sdf  = td / "input.sdf"
+        tmp_out_csv = td / "output.csv"
 
-    reactions: set[str] = set()
-
-    with tempfile.TemporaryDirectory() as td:
-        td = Path(td)
-        in_sdf  = td / "input.sdf"
-        out_csv = td / "output.csv"
-
-        # write SDF
-        w = Chem.SDWriter(str(in_sdf))
-        w.write(mol)
+        # Build SDF input
+        m = Chem.MolFromSmiles(standardized_smi)
+        if not m:
+            return set()
+        w = Chem.SDWriter(str(tmp_in_sdf))
+        w.write(m)
         w.close()
 
-        # build command (preserve your flags)
         cmd = [
-            JAVA_BIN or "java",
-            "-Xmx2G",            # adjust if needed
+            str(JAVA_BIN or "java"),  # BioTransformer runs fine on Java 17; JAVA_BIN defaults to system 'java'
             "-jar", str(BT_JAR),
             "-k", "pred",
             "-b", "allHuman",
-            "-isdf", str(in_sdf.name),   # pass basename; cwd is BT_DIR
-            "-ocsv", str(out_csv.name),
+            "-isdf", str(tmp_in_sdf),     # ABSOLUTE path
+            "-ocsv", str(tmp_out_csv),    # ABSOLUTE path
             "-s", "2",
-            "-cm", "3",
+            "-cm", "3"
         ]
-
         try:
-            # run in tool dir so relative resource paths work
+            print(f"[BT] CMD: {' '.join(cmd)}")
+            # Keep cwd at BT_DIR (jar may look for local resources), but file paths are absolute.
             res = subprocess.run(
                 cmd, cwd=str(BT_DIR), text=True,
                 capture_output=True, timeout=300, check=True
             )
         except subprocess.CalledProcessError as e:
-            print(f"-> BioTransformer failed for {smiles}\nSTDERR:\n{(e.stderr or '').strip()}")
+            print(f"-> BioTransformer failed for {smiles}")
+            if e.stderr:
+                print("STDERR:\n" + e.stderr)
+            else:
+                print("STDERR: <empty>")
             return set()
         except Exception as e:
-            print(f"-> BioTransformer unexpected error for {smiles}: {e}")
+            print(f"-> BioTransformer unexpected error: {e}")
             return set()
 
-        # read output
-        out_path = BT_DIR / out_csv.name  # because tool wrote into cwd
-        if out_path.exists():
-            with out_path.open("r", encoding="utf-8", errors="ignore") as f:
+        if not tmp_out_csv.exists():
+            print("-> BioTransformer did not produce output CSV at:", tmp_out_csv)
+            return set()
+
+        # Parse reactions
+        try:
+            import csv
+            with open(tmp_out_csv, newline="", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     rxn = row.get("Reaction")
                     if rxn:
-                        reactions.add(rxn.strip())
-            # cleanup the file created in cwd
-            try:
-                out_path.unlink()
-            except Exception:
-                pass
+                        reactions.add(rxn)
+        except Exception as e:
+            print("-> BioTransformer output parse error:", e)
 
     return reactions
 
