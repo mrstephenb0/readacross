@@ -50,37 +50,38 @@ TX_DIR    = TOOLS_DIR / "toxtree" / "Toxtree-v3.1.0.1851" / "Toxtree"
 JAVA_BIN = os.environ.get("JAVA_BIN") or shutil.which("java")
 JAVA_BIN_TOXTREE = os.environ.get("JAVA_BIN_TOXTREE") or JAVA_BIN
 
+# --- Java: default + Toxtree-specific
+JAVA_BIN = os.environ.get("JAVA_BIN") or shutil.which("java")
+JAVA_BIN_TOXTREE = os.environ.get("JAVA_BIN_TOXTREE") or JAVA_BIN
+
 def _find_jar(dirpath: Path, patterns) -> Path:
     """
-    patterns: str or list[str]
-    Returns the first match, or raises FileNotFoundError with a directory listing.
+    patterns can be a str (single glob) or a list of globs.
+    Returns the first matching path or raises with a helpful listing.
     """
     dirpath = Path(dirpath)
-    # normalize patterns → list[str]
+    # normalize to list[str]
     if isinstance(patterns, (str, Path)):
         patterns = [str(patterns)]
-    found = []
+
     for pat in patterns:
         if not pat:
             continue
         matches = sorted(dirpath.glob(pat))
         if matches:
-            found.extend(matches)
-            break
-    if not found:
-        print(f"[JAR RESOLVE] looked in: {dirpath}")
-        print(f"[JAR RESOLVE] patterns: {patterns}")
-        try:
-            print("[JAR RESOLVE] directory contents:")
-            for p in sorted(dirpath.glob("*")):
-                print("  -", p.name)
-        except Exception as e:
-            print("[JAR RESOLVE] listing failed:", e)
-        raise FileNotFoundError(f"No JAR matching {patterns} in {dirpath}")
-    jar_path = found[0]
-    print(f"[JAR RESOLVE] using: {jar_path}")
-    return jar_path
+            jar = matches[0]
+            print(f"[JAR RESOLVE] Using {jar}")
+            return jar
 
+    # Not found: print directory contents to logs
+    print(f"[JAR RESOLVE] No JAR matched {patterns} in {dirpath}")
+    try:
+        for p in sorted(dirpath.glob("*")):
+            print("  -", p.name)
+    except Exception as e:
+        print("[JAR RESOLVE] listing failed:", e)
+    raise FileNotFoundError(f"No JAR matching {patterns} in {dirpath}")
+    
 # BioTransformer (e.g., BioTransformer3.0_20230525.jar)
 BT_JAR = _find_jar(BT_DIR, "BioTransformer3.0_20230525.jar")
 
