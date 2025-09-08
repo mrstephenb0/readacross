@@ -1,0 +1,13 @@
+name: readacross
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - rdkit
+  - pandas
+  - numpy
+  - openpyxl
+  - xlsxwriter
+  - pip
+  - pip:
+      - streamlit==1.37.1
