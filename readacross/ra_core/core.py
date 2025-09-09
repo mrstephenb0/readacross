@@ -37,71 +37,71 @@ import xlsxwriter
 RDLogger.DisableLog('rdApp.*')
 
 from pathlib import Path
-import os, shutil, subprocess, tempfile
+import os, shutil
 
-# --- Resolve repo root:   readacross/    (ra_core is inside this folder)
+# --- Resolve repo root: readacross/ (ra_core is inside this folder)
 APP_ROOT = Path(__file__).resolve().parents[1]   # .../readacross
-
-# --- Tools folders you created
 TOOLS_DIR = APP_ROOT / "tools"
-BT_DIR    = TOOLS_DIR / "biotransformer" / "wishartlab-biotransformer3.0jar-6432cf887ed7"
-TX_DIR    = TOOLS_DIR / "toxtree" / "Toxtree-v3.1.0.1851" / "Toxtree"
 
-# JVMs
-JAVA_BIN_DEFAULT = shutil.which("java") or "/usr/bin/java"
-JAVA_BIN_TOXTREE = os.environ.get("JAVA_BIN_TOXTREE", "/opt/java/temurin-11/bin/java")
-JAVA_BIN_BT      = os.environ.get("JAVA_BIN_BIOTRANSFORMER", JAVA_BIN_DEFAULT)
+# JVMs (env overrides allowed)
+JAVA_BIN_DEFAULT  = shutil.which("java") or "/usr/bin/java"
+JAVA_BIN_TOXTREE  = os.environ.get("JAVA_BIN_TOXTREE", "/opt/java/temurin-11/bin/java")
+JAVA_BIN_BT       = os.environ.get("JAVA_BIN_BIOTRANSFORMER", JAVA_BIN_DEFAULT)
 
-# Heap (MB) with sensible defaults for Render free/low-memory tiers
-TT_HEAP_MB = int(os.environ.get("TT_HEAP_MB", "512"))
-BT_HEAP_MB = int(os.environ.get("BT_HEAP_MB", "512"))
+# Heaps (MB)
+TT_HEAP_MB = int(os.environ.get("TT_HEAP_MB", "512"))   # Toxtree
+BT_HEAP_MB = int(os.environ.get("BT_HEAP_MB", "1024"))  # BioTransformer
 
-def _check_file(p: Path, label: str) -> None:
+def _find_first(root: Path, pattern: str) -> Path:
+    """Find first file that matches pattern anywhere under root."""
+    hits = sorted(root.rglob(pattern))
+    if not hits:
+        # Log tree to help debugging if missing
+        print(f"[JAR RESOLVE] No match for '{pattern}' under {root}")
+        try:
+            for p in sorted(root.glob("**/*"))[:200]:
+                pass  # just force traversal for build logs if needed
+        except Exception as e:
+            print("[JAR RESOLVE] listing failed:", e)
+        raise FileNotFoundError(f"No file matching '{pattern}' under {root}")
+    return hits[0]
+
+def _ensure_exists(p: Path, label: str):
     print(f"[JAR RESOLVE] Using {label}: {p}")
     if not p.exists():
         raise FileNotFoundError(f"{label} not found at {p}")
 
+# --- BioTransformer: find JAR and working directory (must contain config.json)
+BT_JAR = _find_first(TOOLS_DIR / "biotransformer", "BioTransformer*.jar")
+_ensure_exists(BT_JAR, "BioTransformer JAR")
 
+# Prefer the JAR's folder; if it doesn't have config.json, try parent
+if (BT_JAR.parent / "config.json").exists():
+    BT_DIR = BT_JAR.parent
+elif (BT_JAR.parent.parent / "config.json").exists():
+    BT_DIR = BT_JAR.parent.parent
+else:
+    raise FileNotFoundError(
+        f"BioTransformer config.json not found near {BT_JAR}. "
+        f"Checked: {BT_JAR.parent} and {BT_JAR.parent.parent}"
+    )
+print(f"[JAR RESOLVE] BioTransformer working dir: {BT_DIR}")
 
-def _find_jar(dirpath: Path, patterns) -> Path:
-    """
-    patterns can be a str (single glob) or a list of globs.
-    Returns the first matching path or raises with a helpful listing.
-    """
-    dirpath = Path(dirpath)
-    # normalize to list[str]
-    if isinstance(patterns, (str, Path)):
-        patterns = [str(patterns)]
+# --- Toxtree: find JAR and working directory (must contain ext/index.properties)
+TX_JAR = _find_first(TOOLS_DIR / "toxtree", "Toxtree*.jar")
+_ensure_exists(TX_JAR, "Toxtree JAR")
 
-    for pat in patterns:
-        if not pat:
-            continue
-        matches = sorted(dirpath.glob(pat))
-        if matches:
-            jar = matches[0]
-            print(f"[JAR RESOLVE] Using {jar}")
-            return jar
-
-    # Not found: print directory contents to logs
-    print(f"[JAR RESOLVE] No JAR matched {patterns} in {dirpath}")
-    try:
-        for p in sorted(dirpath.glob("*")):
-            print("  -", p.name)
-    except Exception as e:
-        print("[JAR RESOLVE] listing failed:", e)
-    raise FileNotFoundError(f"No JAR matching {patterns} in {dirpath}")
-    
-# BioTransformer (e.g., BioTransformer3.0_20230525.jar)
-BT_JAR = _find_jar(BT_DIR, ["BioTransformer*.jar", "*.jar"])
-
-
-# Toxtree main jar (common names: toxtree.jar, toxtree*.jar)
-# If you know the exact JAR name, you can hardcode it here instead.
-TX_JAR = _find_jar(TX_DIR, ["Toxtree*.jar", "*.jar"])
-
-_check_file(BT_JAR, "BioTransformer")
-_check_file(TX_JAR, "Toxtree")
-
+# Prefer the JAR's folder; if it doesn't have ext/index.properties, try parent
+if (TX_JAR.parent / "ext" / "index.properties").exists():
+    TX_DIR = TX_JAR.parent
+elif (TX_JAR.parent.parent / "ext" / "index.properties").exists():
+    TX_DIR = TX_JAR.parent.parent
+else:
+    raise FileNotFoundError(
+        f"Toxtree ext/index.properties not found near {TX_JAR}. "
+        f"Checked: {TX_JAR.parent} and {TX_JAR.parent.parent}"
+    )
+print(f"[JAR RESOLVE] Toxtree working dir: {TX_DIR}")
 
 dart_alerts_dictionary = {
     "Category 1: Inorganics and Derivatives": {
@@ -1404,7 +1404,17 @@ JAVA_BIN_TOXTREE = (
 )
 
 def _run_toxtree_module(smiles: str, module_klass: str) -> pd.DataFrame | None:
-    """Run a Toxtree module with cwd=TX_DIR and absolute I/O paths."""
+    """
+    Run a Toxtree module (headless) on one SMILES.
+    CWD = TX_DIR so Toxtree can see ext/index.properties and all plugin JARs.
+    """
+    from pathlib import Path
+    import tempfile, subprocess, pandas as pd
+
+    # TX_DIR and TX_JAR should already be resolved as:
+    # TX_DIR = /app/tools/toxtree/Toxtree-v3.1.0.1851/Toxtree
+    # TX_JAR = /app/tools/toxtree/.../Toxtree-3.1.0.1851.jar
+
     with tempfile.TemporaryDirectory() as tmpd:
         tmp = Path(tmpd)
         in_csv  = tmp / "input.csv"
@@ -1412,17 +1422,18 @@ def _run_toxtree_module(smiles: str, module_klass: str) -> pd.DataFrame | None:
         pd.DataFrame([{"SMILES": smiles}]).to_csv(in_csv, index=False)
 
         cmd = [
-            JAVA_BIN_TOXTREE,
+            JAVA_BIN_TOXTREE,                   # /opt/java/temurin-11/bin/java
             f"-Xmx{TT_HEAP_MB}m",
             "-Djava.awt.headless=true",
             "-jar", str(TX_JAR),
             "-n",
-            "-i", str(in_csv),   # ABSOLUTE
-            "-o", str(out_csv),  # ABSOLUTE
-            "-m", module_klass,
+            "-i", str(in_csv),                  # absolute path
+            "-o", str(out_csv),                 # absolute path
+            "-m", module_klass,                 # e.g. toxtree.plugins.ames.AmesMutagenicityRules
         ]
-        print(f"[TOXTREE] CMD: {' '.join(cmd)}")
-        res = subprocess.run(cmd, cwd=TX_DIR, capture_output=True, text=True)
+
+        print(f"[TOXTREE] CMD: {' '.join(cmd)}  CWD={TX_DIR}")
+        res = subprocess.run(cmd, cwd=str(TX_DIR), capture_output=True, text=True)
 
         if res.returncode != 0:
             print("[TOXTREE] returncode:", res.returncode)
@@ -1745,45 +1756,67 @@ def standardize_smiles(smiles: str) -> str:
         return None
 
 def run_biotransformer_and_get_reactions(smiles: str) -> set[str]:
-    """Run BioTransformer with cwd=BT_DIR and absolute I/O paths."""
-    rxns: set[str] = set()
-    m = Chem.MolFromSmiles(smiles)
-    if m is None:
-        return rxns
+    """
+    Run BioTransformer (full distro required: JAR + config.json + KBs).
+    CWD = BT_DIR so the app finds config.json, KBs, etc.
+    """
+    from pathlib import Path
+    import tempfile, subprocess, csv
+    reactions = set()
+
+    standardized = standardize_smiles(smiles)
+    if not standardized:
+        return reactions
+
+    m = Chem.MolFromSmiles(standardized)
+    if not m:
+        return reactions
 
     with tempfile.TemporaryDirectory() as tmpd:
         tmp = Path(tmpd)
         in_sdf  = tmp / "input.sdf"
         out_csv = tmp / "output.csv"
-        w = Chem.SDWriter(str(in_sdf)); w.write(m); w.close()
+
+        w = Chem.SDWriter(str(in_sdf))
+        w.write(m)
+        w.close()
 
         cmd = [
-            JAVA_BIN_BT,
+            JAVA_BIN_BT,                     # e.g. /usr/bin/java (Java 17)
             f"-Xmx{BT_HEAP_MB}m",
             "-jar", str(BT_JAR),
             "-k", "pred",
             "-b", "allHuman",
-            "-isdf", str(in_sdf),   # ABSOLUTE
-            "-ocsv", str(out_csv),  # ABSOLUTE
+            "-isdf", str(in_sdf),           # absolute
+            "-ocsv", str(out_csv),          # absolute
             "-s", "2",
             "-cm", "3",
         ]
-        print(f"[BT] CMD: {' '.join(cmd)}")
-        res = subprocess.run(cmd, cwd=BT_DIR, capture_output=True, text=True)
+        print(f"[BT] CMD: {' '.join(cmd)}  CWD={BT_DIR}")
+        res = subprocess.run(cmd, cwd=str(BT_DIR), capture_output=True, text=True)
 
-        if res.returncode != 0 or not out_csv.exists():
-            print(f"[BT] returncode: {res.returncode}")
+        if res.returncode != 0:
+            print("[BT] returncode:", res.returncode)
             print("[BT] stdout:\n", res.stdout)
             print("[BT] stderr:\n", res.stderr)
-            return rxns
+            return reactions
 
-        with out_csv.open("r", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                r = row.get("Reaction")
-                if r:
-                    rxns.add(r)
-    return rxns
+        if not out_csv.exists():
+            print(f"-> BioTransformer did not produce output CSV at: {out_csv}")
+            print("[BT] stdout:\n", res.stdout)
+            print("[BT] stderr:\n", res.stderr)
+            return reactions
 
+        try:
+            with out_csv.open(newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if "Reaction" in row and row["Reaction"]:
+                        reactions.add(row["Reaction"])
+        except Exception as e:
+            print("[BT] Failed reading output CSV:", e)
+
+    return reactions
 
 def _extract_alerts(
     reactions: Iterable,
