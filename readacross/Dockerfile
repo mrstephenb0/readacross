@@ -22,15 +22,33 @@ RUN micromamba install -y -n base -f /tmp/environment.yml && micromamba clean --
 WORKDIR /app
 COPY . /app
 
-# Download real jars into the exact nested paths your code expects
-RUN mkdir -p tools/biotransformer/wishartlab-biotransformer3.0jar-6432cf887ed7 \
- && curl -fL -o tools/biotransformer/wishartlab-biotransformer3.0jar-6432cf887ed7/BioTransformer3.0_20230525.jar \
-      "https://github.com/mrstephenb0/readacross/releases/download/assets/BioTransformer3.0_20230525.jar" \
- && mkdir -p tools/toxtree/Toxtree-v3.1.0.1851/Toxtree \
- && curl -fL -o tools/toxtree/Toxtree-v3.1.0.1851/Toxtree/Toxtree-3.1.0.1851.jar \
-      "https://github.com/mrstephenb0/readacross/releases/download/assets/Toxtree-3.1.0.1851.jar" \
- && test $(stat -c%s tools/biotransformer/wishartlab-biotransformer3.0jar-6432cf887ed7/BioTransformer3.0_20230525.jar) -ge 10000000 \
- && test $(stat -c%s tools/toxtree/Toxtree-v3.1.0.1851/Toxtree/Toxtree-3.1.0.1851.jar) -ge 5000000
+# --- BioTransformer: download full distribution ZIP (contains config.json + KBs)
+RUN mkdir -p /app/tools/biotransformer \
+ && curl -fL -o /tmp/biotransformer.zip \
+      "https://github.com/mrstephenb0/readacross/releases/download/assets/wishartlab-biotransformer3.0jar-6432cf887ed7.zip" \
+ && unzip -q /tmp/biotransformer.zip -d /app/tools/biotransformer \
+ && rm /tmp/biotransformer.zip
+
+# Optional sanity checks in build logs:
+RUN find /app/tools/biotransformer -maxdepth 3 -type f -name 'config.json' -print || true \
+ && ls -lah /app/tools/biotransformer || true
+
+
+# tools for downloading and unzipping
+RUN apt-get update && apt-get install -y --no-install-recommends unzip curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# --- Toxtree: download full distribution ZIP (contains ext/ + index.properties)
+RUN mkdir -p /app/tools/toxtree \
+ && curl -fL -o /tmp/toxtree.zip \
+      "https://github.com/mrstephenb0/readacross/releases/download/assets/Toxtree-v3.1.0.1851.zip" \
+ && unzip -q /tmp/toxtree.zip -d /app/tools/toxtree \
+ && rm /tmp/toxtree.zip
+
+# Optional: quick sanity check in build logs
+RUN ls -lah /app/tools/toxtree/Toxtree-v3.1.0.1851/Toxtree \
+ && ls -lah /app/tools/toxtree/Toxtree-v3.1.0.1851/Toxtree/ext \
+ && grep -H . /app/tools/toxtree/Toxtree-v3.1.0.1851/Toxtree/ext/index.properties || true
 
 # Streamlit
 ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
