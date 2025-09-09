@@ -1404,18 +1404,11 @@ JAVA_BIN_TOXTREE = (
 )
 
 def _run_toxtree_module(smiles: str, module_klass: str) -> pd.DataFrame | None:
-    """
-    Run a Toxtree module in headless mode on a single SMILES.
-    Writes input/output inside a temp folder and sets CWD to that folder.
-    Returns the output.csv as DataFrame or None on failure.
-    """
-    # Temp workspace
+    """Run a Toxtree module with cwd=TX_DIR and absolute I/O paths."""
     with tempfile.TemporaryDirectory() as tmpd:
         tmp = Path(tmpd)
         in_csv  = tmp / "input.csv"
         out_csv = tmp / "output.csv"
-
-        # CSV input must have SMILES header
         pd.DataFrame([{"SMILES": smiles}]).to_csv(in_csv, index=False)
 
         cmd = [
@@ -1423,15 +1416,14 @@ def _run_toxtree_module(smiles: str, module_klass: str) -> pd.DataFrame | None:
             f"-Xmx{TT_HEAP_MB}m",
             "-Djava.awt.headless=true",
             "-jar", str(TX_JAR),
-            "-n",                      # no GUI
-            "-i", "input.csv",         # **relative** to CWD
-            "-o", "output.csv",        # **relative** to CWD
-            "-m", module_klass,        # module class
+            "-n",
+            "-i", str(in_csv),   # ABSOLUTE
+            "-o", str(out_csv),  # ABSOLUTE
+            "-m", module_klass,
         ]
         print(f"[TOXTREE] CMD: {' '.join(cmd)}")
-        res = subprocess.run(cmd, cwd=tmp, capture_output=True, text=True)
+        res = subprocess.run(cmd, cwd=TX_DIR, capture_output=True, text=True)
 
-        # Show diagnostics always if file missing
         if res.returncode != 0:
             print("[TOXTREE] returncode:", res.returncode)
             print("[TOXTREE] stdout:\n", res.stdout)
@@ -1753,25 +1745,17 @@ def standardize_smiles(smiles: str) -> str:
         return None
 
 def run_biotransformer_and_get_reactions(smiles: str) -> set[str]:
-    """
-    Run BioTransformer in a temp workspace, giving it a decent heap.
-    """
-    reactions: set[str] = set()
-    std = smiles  # if you have a standardize_smiles() keep using it
-
-    m = Chem.MolFromSmiles(std)
+    """Run BioTransformer with cwd=BT_DIR and absolute I/O paths."""
+    rxns: set[str] = set()
+    m = Chem.MolFromSmiles(smiles)
     if m is None:
-        return reactions
+        return rxns
 
     with tempfile.TemporaryDirectory() as tmpd:
         tmp = Path(tmpd)
         in_sdf  = tmp / "input.sdf"
         out_csv = tmp / "output.csv"
-
-        # Write single-mol SDF input
-        w = Chem.SDWriter(str(in_sdf))
-        w.write(m)
-        w.close()
+        w = Chem.SDWriter(str(in_sdf)); w.write(m); w.close()
 
         cmd = [
             JAVA_BIN_BT,
@@ -1779,38 +1763,26 @@ def run_biotransformer_and_get_reactions(smiles: str) -> set[str]:
             "-jar", str(BT_JAR),
             "-k", "pred",
             "-b", "allHuman",
-            "-isdf", "input.sdf",     # relative in CWD
-            "-ocsv", "output.csv",    # relative in CWD
+            "-isdf", str(in_sdf),   # ABSOLUTE
+            "-ocsv", str(out_csv),  # ABSOLUTE
             "-s", "2",
             "-cm", "3",
         ]
         print(f"[BT] CMD: {' '.join(cmd)}")
-        res = subprocess.run(cmd, cwd=tmp, capture_output=True, text=True)
+        res = subprocess.run(cmd, cwd=BT_DIR, capture_output=True, text=True)
 
-        if res.returncode != 0:
-            print("[BT] returncode:", res.returncode)
+        if res.returncode != 0 or not out_csv.exists():
+            print(f"[BT] returncode: {res.returncode}")
             print("[BT] stdout:\n", res.stdout)
             print("[BT] stderr:\n", res.stderr)
-            return reactions
+            return rxns
 
-        if not out_csv.exists():
-            print(f"-> BioTransformer did not produce output CSV at: {out_csv}")
-            print("[BT] stdout:\n", res.stdout)
-            print("[BT] stderr:\n", res.stderr)
-            return reactions
-
-        try:
-            with out_csv.open("r", encoding="utf-8") as f:
-                for row in csv.DictReader(f):
-                    rxn = row.get("Reaction")
-                    if rxn:
-                        reactions.add(rxn)
-        except Exception as e:
-            print("[BT] Failed to read output.csv:", e)
-            print("[BT] stdout:\n", res.stdout)
-            print("[BT] stderr:\n", res.stderr)
-
-    return reactions
+        with out_csv.open("r", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                r = row.get("Reaction")
+                if r:
+                    rxns.add(r)
+    return rxns
 
 
 def _extract_alerts(
