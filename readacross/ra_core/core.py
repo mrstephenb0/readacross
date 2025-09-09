@@ -54,7 +54,7 @@ JAVA_BIN_BT      = os.environ.get("JAVA_BIN_BIOTRANSFORMER", JAVA_BIN_DEFAULT)
 
 # Heap (MB) with sensible defaults for Render free/low-memory tiers
 TT_HEAP_MB = int(os.environ.get("TT_HEAP_MB", "512"))
-BT_HEAP_MB = int(os.environ.get("BT_HEAP_MB", "1024"))
+BT_HEAP_MB = int(os.environ.get("BT_HEAP_MB", "512"))
 
 def _check_file(p: Path, label: str) -> None:
     print(f"[JAR RESOLVE] Using {label}: {p}")
