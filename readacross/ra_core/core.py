@@ -1249,7 +1249,7 @@ def calculate_mutagenicity_score(target_smiles: str, surrogate_smiles: str) -> f
     if not target_alerts or not surrogate_alerts: return 0.0
     return len(target_set.intersection(surrogate_set)) / denominator
 
-def get_ames_alerts(smiles: str) -> list[str]:
+def _get_ames_alerts(smiles: str) -> list[str]:
     df = _run_toxtree_module(smiles, "toxtree.plugins.ames.AmesMutagenicityRules")
     if df is None:
         return ["Error: Toxtree execution failed"]
